@@ -26,6 +26,22 @@
 # Verbose mode, print logs
 verbose=True
 
+# Print http request/response headers in verbose mode (off|request|response|all).
+#   off      - do not print headers (default)
+#   request  - print request headers received from the client (HTTP/1.x plaintext proxy only)
+#   response - print response headers returned by the target server
+#   all      - print both
+# NOTE: HTTPS (CONNECT) tunnels are TLS-encrypted, their headers cannot be shown.
+# headerlog=off
+
+# Send styled html error pages (Frutiger Aero) on http proxy errors (off|on).
+#   off - keep the original plain error responses (default)
+#   on  - send a styled error page when the proxy fails to dial the target,
+#         when a rule rejects the request (forward=reject://), or when the
+#         upstream response cannot be parsed/forwarded. Page language follows
+#         the client's Accept-Language header (English/Chinese).
+# errorpage=off
+
 # LISTENERS
 # ---------
 # Local listeners, we can set up multiple listeners on different port with

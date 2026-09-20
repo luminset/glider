@@ -10,6 +10,7 @@ import (
 	"github.com/nadoo/glider/dns"
 	"github.com/nadoo/glider/pkg/log"
 	"github.com/nadoo/glider/proxy"
+	"github.com/nadoo/glider/proxy/http"
 	"github.com/nadoo/glider/rule"
 )
 
@@ -21,6 +22,8 @@ type Config struct {
 	LogFlags   int
 	TCPBufSize int
 	UDPBufSize int
+	HeaderLog  string
+	ErrorPage  string
 
 	Listens []string
 
@@ -48,6 +51,8 @@ func parseConfig() *Config {
 
 	flag.BoolVar(&conf.Verbose, "verbose", false, "verbose mode")
 	flag.IntVar(&conf.LogFlags, "logflags", 19, "do not change it if you do not know what it is, ref: https://pkg.go.dev/log#pkg-constants")
+	flag.StringVar(&conf.HeaderLog, "headerlog", "off", "print http request/response headers in verbose mode: off|request|response|all (can also be set in glider.conf as headerlog=xxx)")
+	flag.StringVar(&conf.ErrorPage, "errorpage", "off", "send styled html error pages (Frutiger Aero) on http proxy errors: off|on (can also be set in glider.conf as errorpage=on)")
 	flag.IntVar(&conf.TCPBufSize, "tcpbufsize", 32768, "tcp buffer size in Bytes")
 	flag.IntVar(&conf.UDPBufSize, "udpbufsize", 2048, "udp buffer size in Bytes")
 	flag.StringSliceUniqVar(&conf.Listens, "listen", nil, "listen url, see the URL section below")
@@ -110,6 +115,9 @@ check=disable: disable health check`)
 
 	// setup logger
 	log.Set(conf.Verbose, conf.LogFlags)
+	http.SetHeaderLogMode(conf.HeaderLog)
+	http.SetErrorPageMode(conf.ErrorPage)
+	http.Version = version
 
 	if len(conf.Listens) == 0 && conf.DNS == "" && len(conf.Services) == 0 {
 		// flag.Usage()
