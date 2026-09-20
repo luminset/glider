@@ -39,3 +39,10 @@ config/rules.d/*.list
 glider
 /bak/
 /rules.d/
+
+# pacweb 自动导出的 CA 证书（环境相关，不入库）
+/ca.crt
+/ca.pem
+
+# 本地运行时日志
+*.log

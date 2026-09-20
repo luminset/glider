@@ -32,6 +32,8 @@ type request struct {
 	auth   string
 	header textproto.MIMEHeader
 
+	rawHeader textproto.MIMEHeader // original headers as received from the client, before cleaning
+
 	target string // target host with port
 	ruri   string // relative uri
 	absuri string // absolute uri
@@ -56,6 +58,12 @@ func parseRequest(r *bufio.Reader) (*request, error) {
 	}
 
 	auth := header.Get("Proxy-Authorization")
+
+	// keep a deep copy of the original headers as received, for header logging
+	rawHeader := make(textproto.MIMEHeader, len(header))
+	for k, vv := range header {
+		rawHeader[k] = append([]string(nil), vv...)
+	}
 
 	cleanHeaders(header)
 	header.Set("Connection", "close")
@@ -84,12 +92,13 @@ func parseRequest(r *bufio.Reader) (*request, error) {
 	}
 
 	req := &request{
-		method: method,
-		uri:    uri,
-		proto:  proto,
-		auth:   auth,
-		header: header,
-		target: tgt,
+		method:    method,
+		uri:       uri,
+		proto:     proto,
+		auth:      auth,
+		header:    header,
+		rawHeader: rawHeader,
+		target:    tgt,
 	}
 
 	if u.IsAbs() {
