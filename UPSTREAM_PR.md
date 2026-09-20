@@ -13,6 +13,8 @@ This document describes which files are **custom additions** and must be
 | `pacweb/` | CA certificate export + PAC hosting + multi-platform install guide service |
 | `launcher/` | Centralized launcher that manages glider & pacweb processes |
 | `rules/` | Personal domain-routing rule files (i2p.rule, direct.rule) |
+| `scripts/` | Fork helper scripts (e.g. upstream patch generator) |
+| `UPSTREAM_PR.md` | This guide itself |
 
 ### Local environment artifacts (already in .gitignore)
 

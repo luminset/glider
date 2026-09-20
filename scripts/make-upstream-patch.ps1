@@ -30,13 +30,14 @@ Write-Host "Upstream: $upstream"
 
 # Fetch latest upstream
 Write-Host "Fetching upstream/main ..." -ForegroundColor Yellow
-git fetch upstream main 2>&1 | Out-Null
+git fetch upstream main --quiet 2>$null
 
 # Paths to exclude from the patch
 $excludePaths = @(
     'pacweb/',
     'launcher/',
     'rules/',
+    'scripts/',
     'UPSTREAM_PR.md'
 )
 
