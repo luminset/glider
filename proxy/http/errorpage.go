@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"net"
 	"strings"
 	"time"
 )
@@ -48,13 +47,13 @@ type pageTexts struct {
 	request    string // "Request" row label
 	target     string // "Target" row label
 	client     string // "Client" row label
-	method     string // "Method" row label
+	via        string // "Route" row label: the upstream the request was sent over
+	stage      string // "Stage" row label: where the request was interrupted
 	time       string // "Time" row label
 	footPre    string // "Generated on" (prefix of footer)
 	footPost   string // "by glider" (suffix of footer)
 	titleBlock string // "Request blocked"
 	descBlock  string // desc of blocked page
-	reasonName string // "Reason" label for blocked reason
 
 	// localized content strings
 	titleConnectFail string // "Connect failed"
@@ -70,6 +69,27 @@ type pageTexts struct {
 	titleBadRequest  string // "Bad Request"
 	descBadRequest   string // "The proxy could not understand the request..."
 	hintBadRequest   string // hint for bad request
+
+	// severity indicator: condition text (shown inside the chip) and the
+	// level headline (shown next to the icon). Levels are: error / warning /
+	// info. Both are localized.
+	condBlock         string // "Rule blocked"
+	condConnectFail   string // "Connection failed"
+	condInternalError string // "Internal error"
+	condUpstreamError string // "Upstream error"
+	condBadRequest    string // "Bad request"
+	levelError        string // "Error"
+	levelWarning      string // "Warning"
+	levelInfo         string // "Info"
+
+	// stage names: the processing stage that was interrupted. They fill the
+	// "Stage" row, so it is obvious *where* the request died instead of only
+	// knowing that something failed.
+	stageRequest    string // request parsing failed (bad client request)
+	stageDial       string // connecting to the upstream / target
+	stageWrite      string // sending the request upstream
+	stageRead       string // reading the response from upstream
+	stageReadHeader string // reading the response headers from upstream
 }
 
 var enTexts = pageTexts{
@@ -79,13 +99,13 @@ var enTexts = pageTexts{
 	request:    "Request",
 	target:     "Target",
 	client:     "Client",
-	method:     "Method",
+	via:        "Route",
+	stage:      "Stage",
 	time:       "Time",
 	footPre:    "Generated on",
 	footPost:   "by glider",
 	titleBlock: "Request blocked",
 	descBlock:  "This request was rejected by the proxy rule.",
-	reasonName: "Reason",
 
 	titleConnectFail: "Connect failed",
 	descConnectFail:  "The proxy could not establish a connection to the remote server.",
@@ -100,6 +120,21 @@ var enTexts = pageTexts{
 	titleBadRequest:  "Bad Request",
 	descBadRequest:   "The proxy could not understand the request sent by the client.",
 	hintBadRequest:   "Please check the request and try again.",
+
+	condBlock:         "Rule blocked",
+	condConnectFail:   "Connection failed",
+	condInternalError: "Internal error",
+	condUpstreamError: "Upstream error",
+	condBadRequest:    "Bad request",
+	levelError:        "Error",
+	levelWarning:      "Warning",
+	levelInfo:         "Info",
+
+	stageRequest:    "Request parse",
+	stageDial:       "Connection setup",
+	stageWrite:      "Sending request",
+	stageRead:       "Reading response",
+	stageReadHeader: "Reading headers",
 }
 
 var zhTexts = pageTexts{
@@ -109,13 +144,13 @@ var zhTexts = pageTexts{
 	request:    "请求",
 	target:     "目标",
 	client:     "客户端",
-	method:     "方法",
+	via:        "通路",
+	stage:      "中断位置",
 	time:       "时间",
 	footPre:    "由 glider 于",
 	footPost:   "生成",
 	titleBlock: "请求已被拦截",
 	descBlock:  "该请求被代理规则拒绝。",
-	reasonName: "原因",
 
 	titleConnectFail: "连接失败",
 	descConnectFail:  "代理无法与远程服务器建立连接。",
@@ -130,6 +165,21 @@ var zhTexts = pageTexts{
 	titleBadRequest:  "请求格式错误",
 	descBadRequest:   "代理无法理解客户端发送的请求。",
 	hintBadRequest:   "请检查请求内容后重试。",
+
+	condBlock:         "规则拦截",
+	condConnectFail:   "连接失败",
+	condInternalError: "内部错误",
+	condUpstreamError: "上游异常",
+	condBadRequest:    "请求错误",
+	levelError:        "错误",
+	levelWarning:      "警告",
+	levelInfo:         "信息",
+
+	stageRequest:    "请求解析",
+	stageDial:       "建立连接",
+	stageWrite:      "发送请求",
+	stageRead:       "读取响应",
+	stageReadHeader: "读取响应头",
 }
 
 // textsFor returns the localized static labels for the given language tag
@@ -162,6 +212,16 @@ func textsFor(acceptLang string) pageTexts {
 	return enTexts
 }
 
+// errorSeverity classifies a failure so the indicator chip can be
+// color-coded: red for errors, yellow for warnings, blue for info.
+type errorSeverity int
+
+const (
+	severityError   errorSeverity = iota // red
+	severityWarning                      // yellow
+	severityInfo                         // blue
+)
+
 // errorPage describes a request failure to be rendered as an HTML error page.
 // The information layout follows privoxy's built-in error pages
 // (status line, software banner, title, request details),
@@ -169,18 +229,37 @@ func textsFor(acceptLang string) pageTexts {
 // bubbles, clouds, lens flare).
 type errorPage struct {
 	status  string // HTTP status line, e.g. "502 Bad Gateway"
-	version string // software version, e.g. "0.17.0-dev-38b3403"
+	version string // software version, e.g. "0.17.0"
 	listen  string // listen address of the proxy, e.g. "127.0.0.1:18443"
 	title   string
 	desc    string
-	method  string
 	request string
 	target  string
 	client  string
-	time    string
-	reason  string
-	hint    string
-	texts   pageTexts // localized static labels
+	// via is the route the request was actually sent over: the upstream
+	// address reported by the chosen dialer (e.g. "DIRECT", "127.0.0.1:8118"
+	// or "a,b" for a dialer chain). Empty when the failure happened before a
+	// route had been picked; the row is then omitted.
+	via string
+	// stage is the localized name of the processing stage that was
+	// interrupted ("Connection setup", "Reading response", ...). It answers
+	// "where did it break", which the reason alone never told us.
+	stage string
+	time  string
+	// reason is the machine-facing cause (e.g. "REJECT", a dial error).
+	// It is rendered *inside* the indicator chip so the chip carries a real
+	// message instead of repeating the class label. When empty, the chip
+	// falls back to the condition text.
+	reason string
+	// condition is the localized class label ("Rule blocked", "Connection
+	// failed", ...). It is the chip fallback text and is exposed to assistive
+	// technology via the chip's tooltip.
+	condition string
+	// severity drives the chip color: error (red), warning (yellow), info (blue).
+	severity errorSeverity
+	// hint is the advisory line shown below the details.
+	hint  string
+	texts pageTexts // localized static labels
 }
 
 const errorPageTemplate = `<!DOCTYPE html>
@@ -295,27 +374,100 @@ const errorPageTemplate = `<!DOCTYPE html>
     box-shadow: 0 4px 18px rgba(40, 110, 160, 0.14), inset 0 1px 0 rgba(255,255,255,0.85);
   }
   .info .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #2a7fb2; margin-bottom: 8px; font-weight: 600; }
-  .info .info-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed rgba(60, 140, 190, 0.22); }
-  .info .info-head .label { margin-bottom: 0; }
+  /* header: reason chip on the left, severity indicator pinned to the right
+     (mirrors the original layout where the category badge sat on the right). */
+  .info .info-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed rgba(60, 140, 190, 0.22); }
+  .info .info-head .ind-chip { margin-left: 0; margin-right: auto; }
+  .info .info-head .indicator { margin-left: auto; }
   .info .row { display: flex; align-items: baseline; gap: 10px; font-size: 14px; line-height: 1.7; color: #144b6e; word-break: break-all; }
   .info .row + .row { border-top: 1px dashed rgba(60, 140, 190, 0.22); padding-top: 7px; }
   .info .k { flex: 0 0 76px; font-size: 12px; color: #3f8cb8; font-weight: 600; }
   .info .v { flex: 1; text-shadow: 0 1px 0 rgba(255,255,255,0.55); }
   .info .v.url { color: #085fae; font-family: Consolas, "Courier New", monospace; }
-  .info .blocked-flag {
-    display: inline-block; padding: 4px 10px; white-space: nowrap;
-    background: linear-gradient(160deg, #f0b45a 0%, #ea8f3c 100%);
+  /* severity indicator: a Frutiger Aero glass bead + level name, pinned to
+     the right of the details header. Frosted translucent shell, glossy
+     specular highlight, soft colored glow — red = error, yellow = warning,
+     blue = info. */
+  .indicator {
+    position: relative; overflow: hidden;
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 3px 12px 3px 4px; white-space: nowrap;
     border-radius: 999px;
-    font-size: 11.5px; font-weight: 600; color: #fff;
-    text-shadow: 0 1px 2px rgba(160, 90, 20, 0.45);
-    box-shadow: 0 2px 8px rgba(220, 130, 40, 0.35);
+    font-size: 11.5px; font-weight: 700; letter-spacing: 0.3px;
+    border: 1px solid transparent;
+    vertical-align: middle; max-width: 100%;
+    backdrop-filter: blur(10px) saturate(160%);
+    -webkit-backdrop-filter: blur(10px) saturate(160%);
+    text-shadow: 0 1px 0 rgba(255,255,255,0.55);
   }
-  .info .reason {
-    margin-top: 12px; padding: 9px 12px;
-    background: rgba(240, 120, 90, 0.10);
-    border-left: 3px solid #e8854f;
-    border-radius: 0 8px 8px 0;
-    font-size: 12.5px; color: #a3522a; line-height: 1.6;
+  /* glossy top highlight, matching the card's glass treatment */
+  .indicator::before {
+    content: ""; position: absolute; left: 3px; right: 3px; top: 1px; height: 52%;
+    border-radius: 999px 999px 60% 60% / 999px 999px 100% 100%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.8) 0%, rgba(255,255,255,0.16) 60%, rgba(255,255,255,0) 100%);
+    pointer-events: none;
+  }
+  .indicator .ind-icon, .indicator .ind-text { position: relative; z-index: 1; }
+  .indicator .ind-icon {
+    width: 19px; height: 19px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%; color: #fff;
+  }
+  /* specular glass bead: inner top-left light + bottom rim + inner shadow */
+  .indicator .ind-icon::after {
+    content: ""; position: absolute; inset: 1px; border-radius: 50%;
+    background: radial-gradient(circle at 32% 26%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.35) 26%, rgba(255,255,255,0) 56%);
+    pointer-events: none;
+  }
+  .indicator .ind-icon svg { width: 12px; height: 12px; display: block; position: relative; z-index: 1; }
+  .indicator .ind-text { overflow: hidden; text-overflow: ellipsis; }
+  .indicator-level-error {
+    color: #8f1f18;
+    background: linear-gradient(180deg, rgba(255,255,255,0.6) 0%, rgba(255,235,232,0.5) 45%, rgba(240,150,140,0.32) 100%);
+    border-color: rgba(255,255,255,0.75);
+    box-shadow: 0 2px 8px rgba(192,57,43,0.28), inset 0 -3px 8px rgba(192,57,43,0.16);
+  }
+  .indicator-level-error .ind-icon {
+    background: radial-gradient(circle at 32% 26%, #ff9d8f 0%, #e0503f 48%, #b3342a 100%);
+    box-shadow: 0 2px 6px rgba(192,57,43,0.45), inset 0 -2px 4px rgba(120,20,10,0.35), inset 0 1px 1px rgba(255,255,255,0.6);
+  }
+  .indicator-level-warning {
+    color: #7a5c00;
+    background: linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,250,225,0.5) 45%, rgba(245,215,110,0.34) 100%);
+    border-color: rgba(255,255,255,0.78);
+    box-shadow: 0 2px 8px rgba(190,150,0,0.26), inset 0 -3px 8px rgba(190,150,0,0.16);
+  }
+  .indicator-level-warning .ind-icon {
+    background: radial-gradient(circle at 32% 26%, #ffe98a 0%, #f1c40f 50%, #c99a00 100%);
+    color: #6b5200;
+    box-shadow: 0 2px 6px rgba(190,150,0,0.42), inset 0 -2px 4px rgba(140,105,0,0.3), inset 0 1px 1px rgba(255,255,255,0.7);
+  }
+  .indicator-level-info {
+    color: #14527f;
+    background: linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(235,247,255,0.5) 45%, rgba(140,205,245,0.34) 100%);
+    border-color: rgba(255,255,255,0.78);
+    box-shadow: 0 2px 8px rgba(41,128,185,0.26), inset 0 -3px 8px rgba(41,128,185,0.16);
+  }
+  .indicator-level-info .ind-icon {
+    background: radial-gradient(circle at 32% 26%, #8fd4ff 0%, #3498db 50%, #1f6fa8 100%);
+    box-shadow: 0 2px 6px rgba(41,128,185,0.42), inset 0 -2px 4px rgba(20,80,130,0.32), inset 0 1px 1px rgba(255,255,255,0.65);
+  }
+  /* left-hand message chip in the details header, carrying the real failure
+     reason. Frosted glass inset panel to stay in the Aero idiom. */
+  .info .ind-chip {
+    display: inline-block; min-width: 0;
+    padding: 3px 11px;
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.42) 100%);
+    border: 1px solid rgba(255,255,255,0.7);
+    box-shadow: 0 2px 8px rgba(40,110,160,0.12), inset 0 1px 1px rgba(255,255,255,0.9);
+    font-size: 11.5px; color: #22658c;
+    font-family: Consolas, "Courier New", monospace;
+    overflow-wrap: break-word; word-break: break-word;
+    vertical-align: middle;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .indicator, .indicator::before { transition: none; }
   }
   .info .hint { margin-top: 10px; font-size: 12.5px; color: #2a6f96; }
   .foot {
@@ -331,7 +483,10 @@ const errorPageTemplate = `<!DOCTYPE html>
     .card { margin: 50px 14px 30px; }
     .statusbar { flex-direction: column; align-items: flex-start; gap: 4px; }
     .banner { text-align: left; }
-    .info .blocked-flag { max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
+    .info .info-head { flex-wrap: wrap; }
+    .info .info-head .ind-chip { order: 2; margin-right: 0; }
+    .info .info-head .indicator { order: 1; margin-left: 0; }
+    .indicator { max-width: 100%; }
   }
   @media (prefers-reduced-motion: reduce) {
     .cloud, .aurora, .abubble, .flare { animation: none !important; }
@@ -368,15 +523,15 @@ const errorPageTemplate = `<!DOCTYPE html>
   </div>
   <div class="info">
     <div class="info-head">
-      <span class="label">@@DETAILS@@</span>
-      @@BLOCKED_FLAG@@
+      @@REASON_CHIP@@
+      @@INDICATOR@@
     </div>
     <div class="row"><span class="k">@@REQUEST@@</span><span class="v url">@@REQURI@@</span></div>
     <div class="row"><span class="k">@@TARGET@@</span><span class="v">@@TGT@@</span></div>
     <div class="row"><span class="k">@@CLIENT@@</span><span class="v">@@CLI@@</span></div>
-    <div class="row"><span class="k">@@METHOD@@</span><span class="v">@@METH@@</span></div>
+    @@VIA_ROW@@
+    @@STAGE_ROW@@
     <div class="row"><span class="k">@@TIME@@</span><span class="v">@@TM@@</span></div>
-    <div class="reason">@@REASON_LABEL@@: @@REASON@@</div>
     <div class="hint">@@HINT@@</div>
   </div>
   <div class="foot">
@@ -386,6 +541,14 @@ const errorPageTemplate = `<!DOCTYPE html>
 
 </body>
 </html>`
+
+// Inline SVG icons for the severity indicator (12x12 viewBox, white/currentColor).
+// A cross for errors, a triangle-exclamation for warnings, and an "i" for info.
+const svgIconError = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="4.5" y1="4.5" x2="11.5" y2="11.5"/><line x1="11.5" y1="4.5" x2="4.5" y2="11.5"/></svg>`
+
+const svgIconWarning = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M8 1.8L15 14H1L8 1.8z"/><line x1="8" y1="6.4" x2="8" y2="10" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="12.1" r="0.85" fill="currentColor" stroke="none"/></svg>`
+
+const svgIconInfo = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="6.6"/><circle cx="8" cy="4.7" r="0.95" fill="currentColor" stroke="none"/><line x1="8" y1="7.2" x2="8" y2="11.6" stroke-width="2.1" stroke-linecap="round"/></svg>`
 
 // sendErrorPage writes a complete HTTP error response with an HTML body.
 func sendErrorPage(w io.Writer, proto, status string, ep errorPage) {
@@ -405,24 +568,65 @@ func sendPlainError(w io.Writer, proto, status string) {
 	fmt.Fprintf(w, "%s %s\r\n\r\n", proto, status)
 }
 
+// renderIndicator builds the severity indicator pill: a color-coded icon
+// plus the level name (Error / Warning / Info). It is pinned to the right
+// edge of the details header, mirroring where the old category badge sat.
+// Color follows severity: red = error, yellow = warning, blue = info.
+func renderIndicator(ep errorPage) string {
+	var levelClass, levelText, icon string
+	switch ep.severity {
+	case severityWarning:
+		levelClass, levelText, icon = "indicator-level-warning", ep.texts.levelWarning, svgIconWarning
+	case severityInfo:
+		levelClass, levelText, icon = "indicator-level-info", ep.texts.levelInfo, svgIconInfo
+	default:
+		levelClass, levelText, icon = "indicator-level-error", ep.texts.levelError, svgIconError
+	}
+
+	return `<span class="indicator ` + levelClass + `" title="` + html.EscapeString(ep.condition) + `">` +
+		`<span class="ind-icon">` + icon + `</span><span class="ind-text">` +
+		html.EscapeString(levelText) + `</span></span>`
+}
+
+// renderReasonChip builds the left-hand message chip, which carries the
+// actual failure reason (falling back to the condition label when there is
+// no machine-readable reason). It replaces the former static "Request
+// details" label so the header reads [reason] ..... [indicator].
+func renderReasonChip(ep errorPage) string {
+	chip := strings.TrimSpace(ep.reason)
+	if chip == "" {
+		chip = ep.condition
+	}
+	return `<span class="ind-chip" title="` + html.EscapeString(chip) + `">` +
+		html.EscapeString(truncateRunes(chip, 120)) + `</span>`
+}
+
+// renderInfoRow renders one "label | value" row of the request details block.
+// It returns an empty string when the value is blank, so the optional
+// diagnostic rows (route, stage) disappear instead of leaving an empty line
+// behind. Values are escaped, and long ones wrap thanks to the row CSS.
+func renderInfoRow(label, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return `<div class="row"><span class="k">` + html.EscapeString(label) +
+		`</span><span class="v">` + html.EscapeString(value) + `</span></div>`
+}
+
+// truncateRunes shortens s to at most n runes, appending an ellipsis when it
+// was cut. It is rune-aware so multi-byte text (e.g. Chinese) is not broken.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "\u2026"
+}
+
 // renderErrorPage fills the error page template with escaped field values.
 func renderErrorPage(ep errorPage) string {
 	if ep.texts.lang == "" {
 		ep.texts = enTexts
-	}
-
-	blockedFlag := ""
-	if ep.title == ep.texts.titleBlock {
-		// Show the blocked target host in the flag badge so it differs from
-		// the page title and carries actual request detail. Strip a trailing
-		// port if present; fall back to the full target on parse failure.
-		host := ep.target
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
-		}
-		if host != "" {
-			blockedFlag = `<span class="blocked-flag" title="` + html.EscapeString(ep.target) + `">` + html.EscapeString(host) + `</span>`
-		}
 	}
 
 	replacer := strings.NewReplacer(
@@ -434,19 +638,18 @@ func renderErrorPage(ep errorPage) string {
 		"@@TITLE@@", html.EscapeString(ep.title),
 		"@@DESC@@", html.EscapeString(ep.desc),
 		"@@DETAILS@@", html.EscapeString(ep.texts.details),
-		"@@BLOCKED_FLAG@@", blockedFlag,
+		"@@REASON_CHIP@@", renderReasonChip(ep),
+		"@@INDICATOR@@", renderIndicator(ep),
 		"@@REQUEST@@", html.EscapeString(ep.texts.request),
 		"@@REQURI@@", html.EscapeString(ep.request),
 		"@@TARGET@@", html.EscapeString(ep.texts.target),
 		"@@TGT@@", html.EscapeString(ep.target),
 		"@@CLIENT@@", html.EscapeString(ep.texts.client),
 		"@@CLI@@", html.EscapeString(ep.client),
-		"@@METHOD@@", html.EscapeString(ep.texts.method),
-		"@@METH@@", html.EscapeString(ep.method),
+		"@@VIA_ROW@@", renderInfoRow(ep.texts.via, ep.via),
+		"@@STAGE_ROW@@", renderInfoRow(ep.texts.stage, ep.stage),
 		"@@TIME@@", html.EscapeString(ep.texts.time),
 		"@@TM@@", html.EscapeString(ep.time),
-		"@@REASON_LABEL@@", html.EscapeString(ep.texts.reasonName),
-		"@@REASON@@", html.EscapeString(ep.reason),
 		"@@HINT@@", html.EscapeString(ep.hint),
 		"@@FOOT_PRE@@", html.EscapeString(ep.texts.footPre),
 		"@@FOOT_POST@@", html.EscapeString(ep.texts.footPost),

@@ -40,6 +40,9 @@ verbose=True
 #         when a rule rejects the request (forward=reject://), or when the
 #         upstream response cannot be parsed/forwarded. Page language follows
 #         the client's Accept-Language header (English/Chinese).
+#         The page shows the request, the target, the client, the route the
+#         request was sent over (upstream proxy address) and the stage where
+#         it was interrupted (connection setup / sending / reading).
 # errorpage=off
 
 # LISTENERS

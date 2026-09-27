@@ -55,18 +55,21 @@ func (s *HTTP) Serve(cc net.Conn) {
 		texts := enTexts
 		if errorPageEnabled() {
 			sendErrorPage(c, "HTTP/1.1", "400 Bad Request", errorPage{
-				status:  "400 Bad Request",
-				version: Version,
-				listen:  s.addr,
-				title:   texts.titleBadRequest,
-				desc:    texts.descBadRequest,
-				method:  "",
-				request: "",
-				target:  "",
-				client:  c.RemoteAddr().String(),
-				reason:  err.Error(),
-				hint:    texts.hintBadRequest,
-				texts:   texts,
+				status:    "400 Bad Request",
+				version:   Version,
+				listen:    s.addr,
+				title:     texts.titleBadRequest,
+				desc:      texts.descBadRequest,
+				request:   "",
+				target:    "",
+				client:    c.RemoteAddr().String(),
+				via:       "",
+				stage:     texts.stageRequest,
+				reason:    err.Error(),
+				condition: texts.condBadRequest,
+				severity:  severityWarning,
+				hint:      texts.hintBadRequest,
+				texts:     texts,
 			})
 		}
 		return
@@ -99,6 +102,16 @@ func (s *HTTP) servRequest(req *request, c *proxy.Conn) {
 	s.servHTTP(req, c)
 }
 
+// dialerAddr returns the upstream address of the dialer chosen for a request,
+// used to fill the "Route" row of the error page. It tolerates a nil dialer
+// (the failure may have happened before any dialer existed).
+func dialerAddr(d proxy.Dialer) string {
+	if d == nil {
+		return ""
+	}
+	return d.Addr()
+}
+
 func (s *HTTP) servHTTPS(r *request, c net.Conn) {
 	rc, dialer, err := s.proxy.Dial("tcp", r.uri)
 	if err != nil {
@@ -106,33 +119,39 @@ func (s *HTTP) servHTTPS(r *request, c net.Conn) {
 			texts := textsFor(r.rawHeader.Get("Accept-Language"))
 			if isReject(err) {
 				sendErrorPage(c, r.proto, "502 Bad Gateway", errorPage{
-					status:  "502 Bad Gateway",
-					version: Version,
-					listen:  s.addr,
-					title:   texts.titleBlock,
-					desc:    texts.descBlock,
-					method:  r.method,
-					request: r.uri,
-					target:  r.uri,
-					client:  c.RemoteAddr().String(),
-					reason:  err.Error(),
-					hint:    "",
-					texts:   texts,
+					status:    "502 Bad Gateway",
+					version:   Version,
+					listen:    s.addr,
+					title:     texts.titleBlock,
+					desc:      texts.descBlock,
+					request:   r.uri,
+					target:    r.uri,
+					client:    c.RemoteAddr().String(),
+					via:       dialerAddr(dialer),
+					stage:     texts.stageDial,
+					reason:    err.Error(),
+					condition: texts.condBlock,
+					severity:  severityInfo,
+					hint:      "",
+					texts:     texts,
 				})
 			} else {
 				sendErrorPage(c, r.proto, "502 Bad Gateway", errorPage{
-					status:  "502 Bad Gateway",
-					version: Version,
-					listen:  s.addr,
-					title:   texts.titleConnectFail,
-					desc:    texts.descConnectFail,
-					method:  r.method,
-					request: r.uri,
-					target:  r.uri,
-					client:  c.RemoteAddr().String(),
-					reason:  err.Error(),
-					hint:    texts.hintConnectFail,
-					texts:   texts,
+					status:    "502 Bad Gateway",
+					version:   Version,
+					listen:    s.addr,
+					title:     texts.titleConnectFail,
+					desc:      texts.descConnectFail,
+					request:   r.uri,
+					target:    r.uri,
+					client:    c.RemoteAddr().String(),
+					via:       dialerAddr(dialer),
+					stage:     texts.stageDial,
+					reason:    err.Error(),
+					condition: texts.condConnectFail,
+					severity:  severityError,
+					hint:      texts.hintConnectFail,
+					texts:     texts,
 				})
 			}
 		} else {
@@ -171,33 +190,39 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 		if errorPageEnabled() {
 			if isReject(err) {
 				sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-					status:  "502 Bad Gateway",
-					version: Version,
-					listen:  s.addr,
-					title:   texts.titleBlock,
-					desc:    texts.descBlock,
-					method:  req.method,
-					request: req.absuri,
-					target:  req.target,
-					client:  c.RemoteAddr().String(),
-					reason:  err.Error(),
-					hint:    "",
-					texts:   texts,
+					status:    "502 Bad Gateway",
+					version:   Version,
+					listen:    s.addr,
+					title:     texts.titleBlock,
+					desc:      texts.descBlock,
+					request:   req.absuri,
+					target:    req.target,
+					client:    c.RemoteAddr().String(),
+					via:       dialerAddr(dialer),
+					stage:     texts.stageDial,
+					reason:    err.Error(),
+					condition: texts.condBlock,
+					severity:  severityInfo,
+					hint:      "",
+					texts:     texts,
 				})
 			} else {
 				sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-					status:  "502 Bad Gateway",
-					version: Version,
-					listen:  s.addr,
-					title:   texts.titleConnectFail,
-					desc:    texts.descConnectFail,
-					method:  req.method,
-					request: req.absuri,
-					target:  req.target,
-					client:  c.RemoteAddr().String(),
-					reason:  err.Error(),
-					hint:    texts.hintConnectFail,
-					texts:   texts,
+					status:    "502 Bad Gateway",
+					version:   Version,
+					listen:    s.addr,
+					title:     texts.titleConnectFail,
+					desc:      texts.descConnectFail,
+					request:   req.absuri,
+					target:    req.target,
+					client:    c.RemoteAddr().String(),
+					via:       dialerAddr(dialer),
+					stage:     texts.stageDial,
+					reason:    err.Error(),
+					condition: texts.condConnectFail,
+					severity:  severityError,
+					hint:      texts.hintConnectFail,
+					texts:     texts,
 				})
 			}
 		} else {
@@ -218,18 +243,21 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 		if errorPageEnabled() {
 			texts := textsFor(req.rawHeader.Get("Accept-Language"))
 			sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-				status:  "502 Bad Gateway",
-				version: Version,
-				listen:  s.addr,
-				title:   texts.titleWriteFail,
-				desc:    texts.descWriteFail,
-				method:  req.method,
-				request: req.absuri,
-				target:  req.target,
-				client:  c.RemoteAddr().String(),
-				reason:  err.Error(),
-				hint:    "",
-				texts:   texts,
+				status:    "502 Bad Gateway",
+				version:   Version,
+				listen:    s.addr,
+				title:     texts.titleWriteFail,
+				desc:      texts.descWriteFail,
+				request:   req.absuri,
+				target:    req.target,
+				client:    c.RemoteAddr().String(),
+				via:       dialerAddr(dialer),
+				stage:     texts.stageWrite,
+				reason:    err.Error(),
+				condition: texts.condInternalError,
+				severity:  severityError,
+				hint:      "",
+				texts:     texts,
 			})
 		}
 		return
@@ -253,18 +281,21 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 		if errorPageEnabled() {
 			texts := textsFor(req.rawHeader.Get("Accept-Language"))
 			sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-				status:  "502 Bad Gateway",
-				version: Version,
-				listen:  s.addr,
-				title:   texts.titleUpstreamEOF,
-				desc:    texts.descUpstreamEOF,
-				method:  req.method,
-				request: req.absuri,
-				target:  req.target,
-				client:  c.RemoteAddr().String(),
-				reason:  err.Error(),
-				hint:    "",
-				texts:   texts,
+				status:    "502 Bad Gateway",
+				version:   Version,
+				listen:    s.addr,
+				title:     texts.titleUpstreamEOF,
+				desc:      texts.descUpstreamEOF,
+				request:   req.absuri,
+				target:    req.target,
+				client:    c.RemoteAddr().String(),
+				via:       dialerAddr(dialer),
+				stage:     texts.stageRead,
+				reason:    err.Error(),
+				condition: texts.condUpstreamError,
+				severity:  severityWarning,
+				hint:      "",
+				texts:     texts,
 			})
 		}
 		return
@@ -275,18 +306,21 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 		if errorPageEnabled() {
 			texts := textsFor(req.rawHeader.Get("Accept-Language"))
 			sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-				status:  "502 Bad Gateway",
-				version: Version,
-				listen:  s.addr,
-				title:   texts.titleBadStart,
-				desc:    texts.descBadStart,
-				method:  req.method,
-				request: req.absuri,
-				target:  req.target,
-				client:  c.RemoteAddr().String(),
-				reason:  line,
-				hint:    "",
-				texts:   texts,
+				status:    "502 Bad Gateway",
+				version:   Version,
+				listen:    s.addr,
+				title:     texts.titleBadStart,
+				desc:      texts.descBadStart,
+				request:   req.absuri,
+				target:    req.target,
+				client:    c.RemoteAddr().String(),
+				via:       dialerAddr(dialer),
+				stage:     texts.stageRead,
+				reason:    line,
+				condition: texts.condUpstreamError,
+				severity:  severityWarning,
+				hint:      "",
+				texts:     texts,
 			})
 		}
 		return
@@ -298,18 +332,21 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 		if errorPageEnabled() {
 			texts := textsFor(req.rawHeader.Get("Accept-Language"))
 			sendErrorPage(c, req.proto, "502 Bad Gateway", errorPage{
-				status:  "502 Bad Gateway",
-				version: Version,
-				listen:  s.addr,
-				title:   texts.titleBadStart,
-				desc:    texts.descBadHeader,
-				method:  req.method,
-				request: req.absuri,
-				target:  req.target,
-				client:  c.RemoteAddr().String(),
-				reason:  err.Error(),
-				hint:    "",
-				texts:   texts,
+				status:    "502 Bad Gateway",
+				version:   Version,
+				listen:    s.addr,
+				title:     texts.titleBadStart,
+				desc:      texts.descBadHeader,
+				request:   req.absuri,
+				target:    req.target,
+				client:    c.RemoteAddr().String(),
+				via:       dialerAddr(dialer),
+				stage:     texts.stageReadHeader,
+				reason:    err.Error(),
+				condition: texts.condUpstreamError,
+				severity:  severityWarning,
+				hint:      "",
+				texts:     texts,
 			})
 		}
 		return
