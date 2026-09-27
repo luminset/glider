@@ -20,6 +20,10 @@
 .zed
 .DS_Store
 
+# local workbench notes (memory, upstream handoff, rendered previews) --
+# may contain internal addresses, keep them out of the repository
+.workbuddy/
+
 # dev test only
 /dev/
 .gocache/
