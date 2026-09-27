@@ -176,6 +176,14 @@ func (s *HTTP) servHTTPS(r *request, c net.Conn) {
 }
 
 func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
+	// privoxy global passthrough: independent, opt-in and handled before the
+	// rule chain. See privoxy.go for why CONNECT cannot work here. Per-rule
+	// routing uses the privoxy:// dialer in a rule file instead.
+	if privoxyPassthroughEnabled() && isPrivoxyDomain(req.target) {
+		s.servPrivoxy(req, c)
+		return
+	}
+
 	rc, dialer, err := s.proxy.Dial("tcp", req.target)
 
 	if headerLogEnabled("request") {
@@ -237,7 +245,14 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 	defer pool.PutBytesBuffer(buf)
 
 	// send request to remote server
-	req.WriteBuf(buf)
+	if usesAbsoluteURI(dialer) {
+		// proxy-style upstream (e.g. privoxy via `forward=privoxy://...`): the
+		// request line must carry the absolute URI, which is the only form
+		// such an upstream applies its own actions to.
+		req.WriteAbsBuf(buf)
+	} else {
+		req.WriteBuf(buf)
+	}
 	_, err = rc.Write(buf.Bytes())
 	if err != nil {
 		if errorPageEnabled() {

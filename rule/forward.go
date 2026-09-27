@@ -113,6 +113,18 @@ func (f *Forwarder) URL() string {
 	return f.url
 }
 
+// AbsoluteURI reports whether the underlying dialer expects proxy-style
+// (absolute-URI) requests instead of origin-form ones. It forwards the
+// (optional) capability of the wrapped dialer, so the http server can pick the
+// right request form when a rule routes traffic through it
+// (e.g. `forward=privoxy://host:port`).
+func (f *Forwarder) AbsoluteURI() bool {
+	if a, ok := f.Dialer.(interface{ AbsoluteURI() bool }); ok {
+		return a.AbsoluteURI()
+	}
+	return false
+}
+
 // Dial dials to addr and returns conn.
 func (f *Forwarder) Dial(network, addr string) (c net.Conn, err error) {
 	c, err = f.Dialer.Dial(network, addr)

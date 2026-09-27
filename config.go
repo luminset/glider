@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"time"
 
 	"github.com/nadoo/conflag"
 
@@ -24,6 +25,12 @@ type Config struct {
 	UDPBufSize int
 	HeaderLog  string
 	ErrorPage  string
+
+	// privoxy custom-domain passthrough (independent, off by default)
+	PrivoxyCompat  string
+	PrivoxyAddr    string
+	PrivoxyDomains []string
+	PrivoxyTimeout int
 
 	Listens []string
 
@@ -53,6 +60,10 @@ func parseConfig() *Config {
 	flag.IntVar(&conf.LogFlags, "logflags", 19, "do not change it if you do not know what it is, ref: https://pkg.go.dev/log#pkg-constants")
 	flag.StringVar(&conf.HeaderLog, "headerlog", "off", "print http request/response headers in verbose mode: off|request|response|all (can also be set in glider.conf as headerlog=xxx)")
 	flag.StringVar(&conf.ErrorPage, "errorpage", "off", "send styled html error pages (Frutiger Aero) on http proxy errors: off|on (can also be set in glider.conf as errorpage=on)")
+	flag.StringVar(&conf.PrivoxyCompat, "privoxycompat", "off", "privoxy custom-domain compatibility: off|on. When on, requests can be sent to privoxy in proxy form (absolute URI, no CONNECT) so privoxy's own actions (e.g. a +redirect on a custom .da domain) apply. Two routing modes: (a) rule file, recommended: forward=privoxy://HOST:PORT + domain=da; (b) global passthrough: also set -privoxyaddr and -privoxydomain")
+	flag.StringVar(&conf.PrivoxyAddr, "privoxyaddr", "", "privoxy address for the GLOBAL passthrough mode of -privoxycompat, format: host:port (an http:// prefix is accepted), e.g. 127.0.0.1:8118. Not needed when you route with forward=privoxy:// in a rule file")
+	flag.StringSliceUniqVar(&conf.PrivoxyDomains, "privoxydomain", nil, "domain suffix routed to privoxy in the GLOBAL passthrough mode of -privoxycompat, e.g. da (matches da and *.da), can be specified multiple times. Leave empty when you route with forward=privoxy:// in a rule file")
+	flag.IntVar(&conf.PrivoxyTimeout, "privoxytimeout", 10, "timeout(seconds) for connecting to privoxy in the global passthrough mode")
 	flag.IntVar(&conf.TCPBufSize, "tcpbufsize", 32768, "tcp buffer size in Bytes")
 	flag.IntVar(&conf.UDPBufSize, "udpbufsize", 2048, "udp buffer size in Bytes")
 	flag.StringSliceUniqVar(&conf.Listens, "listen", nil, "listen url, see the URL section below")
@@ -117,6 +128,8 @@ check=disable: disable health check`)
 	log.Set(conf.Verbose, conf.LogFlags)
 	http.SetHeaderLogMode(conf.HeaderLog)
 	http.SetErrorPageMode(conf.ErrorPage)
+	http.SetPrivoxyCompat(conf.PrivoxyCompat, conf.PrivoxyAddr, conf.PrivoxyDomains,
+		time.Duration(conf.PrivoxyTimeout)*time.Second)
 	http.Version = version
 
 	if len(conf.Listens) == 0 && conf.DNS == "" && len(conf.Services) == 0 {

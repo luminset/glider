@@ -45,6 +45,34 @@ verbose=True
 #         it was interrupted (connection setup / sending / reading).
 # errorpage=off
 
+# Privoxy custom-domain compatibility (off|on), off by default.
+# privoxy can answer user-defined domains that do not exist in DNS, e.g. a
+# custom `.da` suffix handled by a `+redirect{}` action. Such requests must be
+# sent to privoxy as ordinary proxy (absolute-URI) requests: privoxy never
+# applies its actions to CONNECT tunnels, and its default limit-connect{443}
+# even refuses CONNECT to port 80.
+#
+# This option is the master switch. It enables two routing modes:
+#
+#   (a) per-rule routing (recommended) -- put it in a rule file:
+#         # rules/privoxy.rule
+#         forward=privoxy://127.0.0.1:8118
+#         domain=da
+#       The rule chain decides what goes to privoxy, so other rules, chains
+#       and checks keep working as usual. Only this switch is needed here.
+#
+#   (b) global passthrough -- configure the address and suffixes below:
+#         privoxyaddr=127.0.0.1:8118
+#         privoxydomain=da
+#       Matching requests bypass the rule chain and go straight to privoxy.
+#
+# Either way privoxy's answer, redirects included, is relayed back unchanged,
+# and plain http is required (CONNECT/https is refused explicitly).
+# privoxycompat=off
+# privoxyaddr=127.0.0.1:8118
+# privoxydomain=da
+# privoxytimeout=10
+
 # LISTENERS
 # ---------
 # Local listeners, we can set up multiple listeners on different port with

@@ -1,0 +1,26 @@
+# privoxy 自定义域名分流规则（示例）
+#
+# 用法：把本文件复制为 privoxy.rule（与其它 *.rule 同目录，被 -rules-dir 自动加载），
+#       并把 <PRIVOXY_ADDR> 换成你的 privoxy 地址（例如 127.0.0.1:8118）。
+#
+# 总开关（glider.conf 或命令行，二选一）：
+#   privoxycompat=on
+#   # 或：glider.exe -privoxycompat=on ...
+#   开关关闭时，下面的 privoxy:// 通路会明确报错（不会静默走别的通路），
+#   其它规则与流量完全不受影响。
+#
+# 为什么必须用 privoxy:// 而不是 http:// ：
+#   privoxy 只对它自己代理的「明文 HTTP 请求（绝对 URI）」应用 +redirect / +block 动作；
+#   CONNECT 对 privoxy 而言是不透明的裸隧道，动作不生效；而且 privoxy 默认
+#   limit-connect{443} 会拒绝到 80 端口的 CONNECT —— 这正是之前表现为 EOF / 404 的原因。
+#   privoxy:// 会以「绝对 URI 明文请求」把请求交给 privoxy，重定向响应原样回传。
+#
+# 注意：仅适用于明文 HTTP。HTTPS(443) 走本规则会被明确拒绝并提示（privoxy 无法对隧道做 URL 动作）。
+
+forward=privoxy://<PRIVOXY_ADDR>
+
+# 命中 .da 后缀（最长后缀匹配，自动覆盖 *.da；可再列其它后缀，每行一个 domain=）
+domain=da
+
+# 本规则只有 1 个 forwarder，glider 会自动关闭健康检查；此处显式声明以免误改
+check=disable
