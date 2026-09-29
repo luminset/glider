@@ -8,7 +8,9 @@
 #   pacweb/        - custom CA/PAC service
 #   launcher/      - custom process launcher
 #   rules/         - personal routing rules
+#   scripts/       - fork helper scripts
 #   UPSTREAM_PR.md - this guide itself
+#   AGENTS.md      - fork-local working rules (hygiene / conventions)
 
 $ErrorActionPreference = 'Stop'
 
@@ -38,7 +40,8 @@ $excludePaths = @(
     'launcher/',
     'rules/',
     'scripts/',
-    'UPSTREAM_PR.md'
+    'UPSTREAM_PR.md',
+    'AGENTS.md'
 )
 
 # Build git diff pathspec exclusions (pathspec magic: exclude)

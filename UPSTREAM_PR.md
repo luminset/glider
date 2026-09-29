@@ -15,6 +15,7 @@ This document describes which files are **custom additions** and must be
 | `rules/` | Personal domain-routing rule files (i2p.rule, direct.rule) |
 | `scripts/` | Fork helper scripts (e.g. upstream patch generator) |
 | `UPSTREAM_PR.md` | This guide itself |
+| `AGENTS.md` | Fork-local working rules (commit hygiene, repo conventions) |
 
 ### Local environment artifacts (already in .gitignore)
 
