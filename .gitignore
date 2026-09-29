@@ -36,6 +36,8 @@ dist
 *.zip
 /*.conf
 /*.rule
+# 本地规则文件（含本机内网地址），只提交 .example 模板
+/rules/*.rule
 
 config/rules.d/*.rule
 config/rules.d/*.list

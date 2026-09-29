@@ -446,9 +446,29 @@ func getListenHost(r *http.Request, cfg *Config) string {
 		return cfg.Listen
 	}
 	if host == "" || host == ":" {
-		host = "127.0.0.1"
+		host = detectLocalIP()
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// detectLocalIP 返回本机第一个非回环 IPv4 地址。
+// 用于 Listen 未指定具体地址（如 ":8088"）时推断客户端可访问的地址；
+// 推断失败时退回 127.0.0.1。
+func detectLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() {
+			continue
+		}
+		if ip4 := ipnet.IP.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return "127.0.0.1"
 }
 
 // extractPEMBase64 从 PEM 格式中提取 base64 内容

@@ -1,0 +1,14 @@
+# 本地局域网直连规则（示例）
+# 用法：复制为 rules/direct.rule，按需增删内网网段。
+# 注意：rules/*.rule 已被 .gitignore 忽略。
+
+forward=direct://
+
+# 内网网段
+cidr=192.168.0.0/16
+cidr=10.0.0.0/8
+cidr=172.16.0.0/12
+cidr=127.0.0.0/8
+
+# 禁用健康检查（直连无需检查）
+check=disable

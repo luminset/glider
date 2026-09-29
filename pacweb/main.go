@@ -103,6 +103,7 @@ listen = :8088
 ca_cert = ca.crt
 
 # glider 代理地址（PAC 文件中引用）
+# 改成你自己的 glider 监听地址（局域网客户端需要能访问到）
 proxy_addr = 127.0.0.1:7778
 
 # 内网直连网段（逗号分隔，PAC 文件中引用）
