@@ -84,9 +84,7 @@ func NewSSH(s string, d proxy.Dialer, p proxy.Proxy) (*SSH, error) {
 		config: config,
 	}
 
-	if _, port, _ := net.SplitHostPort(t.addr); port == "" {
-		t.addr = net.JoinHostPort(t.addr, "22")
-	}
+	t.addr = proxy.SetDefaultPort(t.addr, "22")
 
 	return t, nil
 }

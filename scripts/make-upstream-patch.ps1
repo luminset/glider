@@ -9,6 +9,7 @@
 #   launcher/      - custom process launcher
 #   rules/         - personal routing rules
 #   scripts/       - fork helper scripts
+#   .gitignore     - lists fork-only artifacts (pacweb/, launcher/, *.rule, dumps)
 #   UPSTREAM_PR.md - this guide itself
 #   AGENTS.md      - fork-local working rules (hygiene / conventions)
 
@@ -40,6 +41,7 @@ $excludePaths = @(
     'launcher/',
     'rules/',
     'scripts/',
+    '.gitignore',
     'UPSTREAM_PR.md',
     'AGENTS.md'
 )
@@ -62,7 +64,10 @@ $patchFile = Join-Path $repoRoot 'upstream-pr.patch'
 Write-Host ""
 Write-Host "Generating patch -> $patchFile" -ForegroundColor Yellow
 
-git diff upstream/main...HEAD -- . $excludes | Out-File -FilePath $patchFile -Encoding utf8
+# Generate the patch.
+# git writes the file itself: piping through PowerShell would add a UTF-8 BOM and
+# convert LF to CRLF under Windows PowerShell 5.1, and `git apply` rejects both.
+git diff upstream/main...HEAD --output=$patchFile -- . $excludes
 
 $patchSize = (Get-Item $patchFile).Length
 Write-Host "Patch size: $patchSize bytes" -ForegroundColor Green

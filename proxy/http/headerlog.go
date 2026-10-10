@@ -28,6 +28,21 @@ func headerLogEnabled(dir string) bool {
 	return headerLogMode == "all" || headerLogMode == dir
 }
 
+// sensitiveHeaders 的值一旦落到日志就等于泄露身份或会话，打印前一律替换。
+// 判定用去掉连字符并小写后的名字，兼容 textproto 规范化前后的写法。
+var sensitiveHeaders = map[string]bool{
+	"authorization":      true,
+	"proxyauthorization": true,
+	"cookie":             true,
+	"setcookie":          true,
+	"wwwauthenticate":    true,
+	"proxyauthenticate":  true,
+}
+
+func isSensitiveHeader(k string) bool {
+	return sensitiveHeaders[strings.ToLower(strings.ReplaceAll(k, "-", ""))]
+}
+
 // formatHeaders renders a readable, aligned text block of an http start
 // line and its headers. Header keys are sorted for stable output.
 func formatHeaders(title, client, startLine string, h textproto.MIMEHeader) string {
@@ -47,6 +62,9 @@ func formatHeaders(title, client, startLine string, h textproto.MIMEHeader) stri
 
 	for _, k := range keys {
 		for _, v := range h[k] {
+			if isSensitiveHeader(k) {
+				v = "[redacted]"
+			}
 			b.WriteString("    " + k + ": " + v + "\n")
 		}
 	}

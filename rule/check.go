@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"regexp"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nadoo/glider/pkg/pool"
+	"github.com/nadoo/glider/proxy"
 )
 
 // Checker is a forwarder health checker.
@@ -26,10 +26,7 @@ type tcpChecker struct {
 }
 
 func newTcpChecker(addr string, timeout time.Duration) *tcpChecker {
-	if _, port, _ := net.SplitHostPort(addr); port == "" {
-		addr = net.JoinHostPort(addr, "80")
-	}
-	return &tcpChecker{addr, timeout}
+	return &tcpChecker{proxy.SetDefaultPort(addr, "80"), timeout}
 }
 
 // Check implements the Checker interface.
@@ -64,16 +61,16 @@ func newHttpChecker(addr, uri, expect string, timeout time.Duration, withTLS boo
 		regex:   regexp.MustCompile(expect),
 	}
 
-	if _, p, _ := net.SplitHostPort(addr); p == "" {
-		if withTLS {
-			c.addr = net.JoinHostPort(addr, "443")
-		} else {
-			c.addr = net.JoinHostPort(addr, "80")
-		}
+	if withTLS {
+		c.addr = proxy.SetDefaultPort(addr, "443")
+	} else {
+		c.addr = proxy.SetDefaultPort(addr, "80")
 	}
+	// serverName keeps the bracketed IPv6 form for the Host header, while the
+	// TLS server name must be bracket-free to allow IP SAN verification.
 	c.serverName = c.addr[:strings.LastIndex(c.addr, ":")]
 	if withTLS {
-		c.tlsConfig = &tls.Config{ServerName: c.serverName}
+		c.tlsConfig = &tls.Config{ServerName: proxy.Hostname(c.addr)}
 	}
 	return c
 }

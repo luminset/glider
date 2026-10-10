@@ -25,11 +25,12 @@ type Config struct {
 
 var (
 	currentConfig atomic.Value   // 存储 *Config
-	serverMu      sync.Mutex     // 保护 httpServer
+	serverMu      sync.Mutex     // 保护 httpServer / serverGen
 	httpServer    *http.Server   // 当前 HTTP 服务实例
+	serverGen     int            // 每次换绑递增，用于让旧监听协程退出
 	httpMux       *http.ServeMux // 路由（不变，仅 listen 地址变）
-	exeDir        string          // 可执行文件所在目录
-	configFile    string          // 配置文件路径
+	exeDir        string         // 可执行文件所在目录
+	configFile    string         // 配置文件路径
 )
 
 func main() {
@@ -107,6 +108,7 @@ ca_cert = ca.crt
 proxy_addr = 127.0.0.1:7778
 
 # 内网直连网段（逗号分隔，PAC 文件中引用）
+# 只支持 IPv4 网段：PAC 的 isInNet 无法比较 IPv6 地址，v6 网段会被跳过
 direct_ranges = 192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,127.0.0.0/8
 
 # 是否自动从 Windows 证书库导出 CA
@@ -222,60 +224,74 @@ func watchConfig(path string, interval time.Duration) {
 	}
 }
 
-// startServer 启动 HTTP 服务
+// startServer 首次启动 HTTP 服务；绑定失败直接退出，避免留下一个没有监听的进程
 func startServer(cfg *Config) {
-	serverMu.Lock()
-	defer serverMu.Unlock()
-
-	httpServer = &http.Server{
-		Addr:    cfg.Listen,
-		Handler: httpMux,
-	}
-
-	log.Printf("pacweb 启动于 %s", cfg.Listen)
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			if isAddrInUseError(err) {
-				owner := findPortOwner(cfg.Listen)
-				if owner != "" {
-					log.Fatalf("[错误] 端口 %s 被占用 (%s)，请停止该进程或修改配置中的 listen 值后重试", cfg.Listen, owner)
-				}
-				log.Fatalf("[错误] 端口 %s 被占用，请修改配置中的 listen 值后重试", cfg.Listen)
-			}
-			log.Fatalf("[错误] HTTP 服务失败: %v", err)
-		}
-	}()
+	rebindServer(cfg.Listen, true)
 }
 
-// restartServer 重启 HTTP 服务（监听地址变更时调用）
+// restartServer 监听地址变更时重启 HTTP 服务，绑定失败会重试而不是放弃监听
 func restartServer(cfg *Config) {
-	serverMu.Lock()
-	defer serverMu.Unlock()
+	rebindServer(cfg.Listen, false)
+}
 
+// rebindServer 关闭旧服务并接管 listen。
+// fatalOnBindFail 用于首次启动；热重载时端口可能被旧进程短暂占用，
+// 因此重试而不是退出，否则配置一改就再也无法通过页面改回来。
+func rebindServer(listen string, fatalOnBindFail bool) {
+	serverMu.Lock()
 	if httpServer != nil {
 		httpServer.Close()
 	}
+	serverGen++
+	gen := serverGen
+	serverMu.Unlock()
 
-	httpServer = &http.Server{
-		Addr:    cfg.Listen,
-		Handler: httpMux,
-	}
+	go serveForever(gen, listen, fatalOnBindFail)
+}
 
-	log.Printf("pacweb 重启于 %s", cfg.Listen)
-	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			if isAddrInUseError(err) {
-				owner := findPortOwner(cfg.Listen)
-				if owner != "" {
-					log.Printf("[错误] 端口 %s 被占用 (%s)，请停止该进程或修改配置中的 listen 值后重试", cfg.Listen, owner)
-					return
-				}
-				log.Printf("[错误] 端口 %s 被占用，请修改配置中的 listen 值后重试", cfg.Listen)
-				return
-			}
-			log.Printf("[错误] HTTP 服务重启失败: %v", err)
+func serveForever(gen int, listen string, fatalOnBindFail bool) {
+	for {
+		srv := &http.Server{
+			Addr:              listen,
+			Handler:           httpMux,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      60 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
-	}()
+
+		serverMu.Lock()
+		if gen != serverGen { // 已被更新的配置取代
+			serverMu.Unlock()
+			return
+		}
+		httpServer = srv
+		serverMu.Unlock()
+
+		log.Printf("pacweb 启动于 %s", listen)
+
+		err := srv.ListenAndServe()
+		if err == nil || err == http.ErrServerClosed {
+			return
+		}
+
+		if isAddrInUseError(err) {
+			owner := findPortOwner(listen)
+			if fatalOnBindFail {
+				if owner != "" {
+					log.Fatalf("[错误] 端口 %s 被占用 (%s)，请停止该进程或修改配置中的 listen 值后重试", listen, owner)
+				}
+				log.Fatalf("[错误] 端口 %s 被占用，请修改配置中的 listen 值后重试", listen)
+			}
+			log.Printf("[错误] 端口 %s 被占用 (%s)，5 秒后重试", listen, owner)
+		} else if fatalOnBindFail {
+			log.Fatalf("[错误] HTTP 服务失败: %v", err)
+		} else {
+			log.Printf("[错误] HTTP 服务失败: %v，5 秒后重试", err)
+		}
+
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // getConfig 从 atomic.Value 中获取当前配置

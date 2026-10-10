@@ -42,10 +42,10 @@ func ensureFirewallRule() bool {
 	if err != nil {
 		logf("[防火墙] 添加规则失败: %v", err)
 		logf("[防火墙] 输出: %s", string(output))
-		if strings.Contains(string(output), "需要管理员权限") || strings.Contains(string(output), "administrator") {
-			logf("[防火墙] 请以管理员身份运行本程序，或手动执行以下命令添加规则:")
-			logf("  netsh advfirewall firewall add rule name=\"%s\" dir=in action=allow program=\"%s\" enable=yes", ruleName, exePath)
-		}
+		// netsh 的报错文字随系统语言变化，无法靠关键字判断原因，
+		// 因此无论如何都给出可手工执行的等价命令。
+		logf("[防火墙] 若当前账号没有管理员权限，请以提升为管理员后重试，或手动执行:")
+		logf("  netsh advfirewall firewall add rule name=\"%s\" dir=in action=allow program=\"%s\" enable=yes", ruleName, exePath)
 		return false
 	}
 
@@ -91,15 +91,31 @@ func hasFirewallRule(ruleName, exePath string) bool {
 	return false
 }
 
-// extractProgramPath 从 netsh show rule 输出中提取 Program 字段值
+// extractProgramPath 从 `netsh advfirewall firewall show rule` 的输出中取出程序路径。
+// 字段名会随系统语言变化（中文系统里没有 "Program:"），所以按“值是 .exe 路径”来识别。
 func extractProgramPath(output string) string {
 	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Program:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "Program:"))
+		_, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), "\"")
+		if isExePath(val) {
+			return val
 		}
 	}
 	return ""
+}
+
+// isExePath 判断是否为可执行文件路径（盘符路径或 UNC 路径）
+func isExePath(s string) bool {
+	if !strings.EqualFold(filepath.Ext(s), ".exe") {
+		return false
+	}
+	if len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') {
+		return true
+	}
+	return strings.HasPrefix(s, `\\`)
 }
 
 // normalizePath 归一化路径用于比较（转小写、去除引号、统一分隔符）

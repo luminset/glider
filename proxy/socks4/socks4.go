@@ -101,11 +101,16 @@ func (s *SOCKS4) lookupIP(host string) (ip net.IP, err error) {
 		err = errors.New("[socks4] Cannot resolve host: " + host)
 		return
 	}
-	ip = ips[0].To4()
-	if len(ip) != net.IPv4len {
-		err = errors.New("[socks4] IPv6 is not supported by socks4")
-		return
+
+	// the resolver sorts IPv6 first for dual-stack hosts (RFC 6724), and socks4
+	// can only carry an IPv4 destination.
+	for _, i := range ips {
+		if ip = i.To4(); ip != nil {
+			return ip, nil
+		}
 	}
+
+	err = errors.New("[socks4] IPv6 is not supported by socks4")
 	return
 }
 

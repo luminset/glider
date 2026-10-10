@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"net/textproto"
 	"net/url"
 	"strings"
@@ -86,9 +87,11 @@ func parseRequest(r *bufio.Reader) (*request, error) {
 		uri = uri[7:]
 	}
 
+	// a bracketed IPv6 literal already contains ':' without carrying a port, so
+	// the port must be taken from the parsed URL instead of looking for ':'.
 	tgt := u.Host
-	if !strings.Contains(tgt, ":") {
-		tgt += ":80"
+	if u.Port() == "" {
+		tgt = net.JoinHostPort(u.Hostname(), "80")
 	}
 
 	req := &request{

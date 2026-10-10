@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/url"
 	"strings"
 
@@ -52,12 +51,10 @@ func NewWS(s string, d proxy.Dialer, p proxy.Proxy, withTLS bool) (*WS, error) {
 		addr = d.Addr()
 	}
 
-	if _, p, _ := net.SplitHostPort(addr); p == "" {
-		if withTLS {
-			addr = net.JoinHostPort(addr, "443")
-		} else {
-			addr = net.JoinHostPort(addr, "80")
-		}
+	if withTLS {
+		addr = proxy.SetDefaultPort(addr, "443")
+	} else {
+		addr = proxy.SetDefaultPort(addr, "80")
 	}
 
 	query := u.Query()
@@ -84,7 +81,7 @@ func NewWS(s string, d proxy.Dialer, p proxy.Proxy, withTLS bool) (*WS, error) {
 	}
 
 	if w.serverName == "" {
-		w.serverName = w.addr[:strings.LastIndex(w.addr, ":")]
+		w.serverName = proxy.Hostname(w.addr)
 	}
 
 	return w, nil

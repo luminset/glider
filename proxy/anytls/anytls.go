@@ -5,10 +5,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/nadoo/glider/proxy"
@@ -55,11 +53,9 @@ func NewAnyTLS(s string, d proxy.Dialer, p proxy.Proxy) (*AnyTLS, error) {
 		return nil, errors.New("[anytls] password must be specified")
 	}
 	if a.addr != "" {
-		if _, port, _ := net.SplitHostPort(a.addr); port == "" {
-			a.addr = net.JoinHostPort(a.addr, "443")
-		}
+		a.addr = proxy.SetDefaultPort(a.addr, "443")
 		if a.serverName == "" {
-			a.serverName = a.addr[:strings.LastIndex(a.addr, ":")]
+			a.serverName = proxy.Hostname(a.addr)
 		}
 	}
 	if timeout := query.Get("synackTimeout"); timeout != "" {

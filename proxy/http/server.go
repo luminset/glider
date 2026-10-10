@@ -279,12 +279,23 @@ func (s *HTTP) servHTTP(req *request, c *proxy.Conn) {
 	}
 
 	// copy the left request bytes to remote server. eg. length specificed or chunked body.
+	//
+	// c 的缓冲读取器在 servHTTP 返回后会被归还到连接池，因此这个协程必须在归还前结束，
+	// 否则另一个连接的读会复用同一块缓冲区，造成跨连接的数据串扰。
+	bodyDone := make(chan struct{})
 	go func() {
+		defer close(bodyDone)
 		if _, err := c.Reader().Peek(1); err == nil {
 			proxy.Copy(rc, c)
 			rc.SetDeadline(time.Now())
-			c.SetDeadline(time.Now())
 		}
+	}()
+	defer func() {
+		// 给两侧都设期限，才能保证协程一定退出：它可能阻塞在读 c，
+		// 也可能阻塞在写 rc（远端已不再读取请求体）——只解一侧会死等。
+		c.SetDeadline(time.Now())
+		rc.SetDeadline(time.Now())
+		<-bodyDone
 	}()
 
 	r := pool.GetBufReader(rc)

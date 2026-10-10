@@ -58,6 +58,10 @@ func NewProxy(mainForwarders []string, mainStrategy *Strategy, rules []*Config) 
 		for _, f := range rd.main.fwdrs {
 			addr, _, _ := strings.Cut(f.addr, ",")
 			host, _, _ := net.SplitHostPort(addr)
+			if host == "" {
+				// f.addr carries no port, so there is no domain to map.
+				continue
+			}
 			if _, err := netip.ParseAddr(host); err != nil {
 				rd.domainMap.Store(normalizeDomain(host), direct)
 			}

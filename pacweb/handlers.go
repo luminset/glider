@@ -7,8 +7,10 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -68,14 +70,21 @@ func generatePAC(cfg *Config) string {
 	return b.String()
 }
 
-// cidrToPAC 将 CIDR 转换为 PAC 的 IP + mask 格式
+// cidrToPAC 将 CIDR 转换为 PAC 的 IP + mask 格式。
+// PAC 的 isInNet 只支持 IPv4，非 IPv4 网段返回错误由调用方跳过。
 func cidrToPAC(cidr string) (string, string, error) {
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return "", "", err
 	}
+
+	ip4 := ipNet.IP.To4()
+	if ip4 == nil || len(ipNet.Mask) != net.IPv4len {
+		return "", "", fmt.Errorf("%s is not an IPv4 network", cidr)
+	}
+
 	mask := fmt.Sprintf("%d.%d.%d.%d", ipNet.Mask[0], ipNet.Mask[1], ipNet.Mask[2], ipNet.Mask[3])
-	return ipNet.IP.String(), mask, nil
+	return ip4.String(), mask, nil
 }
 
 // handleCA 返回 CA 证书文件
@@ -119,7 +128,7 @@ try {
     Invoke-WebRequest -Uri $certUrl -OutFile $tmpCert -UseBasicParsing
 } catch {
     Write-Host "证书下载失败: $_" -ForegroundColor Red
-    Pause
+    Read-Host "按 Enter 键退出"
     exit 1
 }
 
@@ -135,7 +144,7 @@ Write-Host ""
 Write-Host "PAC 代理配置地址: http://%s/proxy.pac"
 Write-Host "在浏览器或系统代理设置中使用此 URL 即可自动配置代理。"
 Remove-Item $tmpCert -ErrorAction SilentlyContinue
-Pause
+Read-Host "按 Enter 键关闭窗口"
 `, host, host)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -336,11 +345,21 @@ func handleIOS(w http.ResponseWriter, r *http.Request) {
   <integer>1</integer>
 </dict>
 </plist>
-`, certBase64, cfg.CADisplayName, uuid)
+`, certBase64, escapeXMLText(cfg.CADisplayName), uuid)
 
 	w.Header().Set("Content-Type", "application/x-apple-aspen-config")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.mobileconfig\"")
 	fmt.Fprint(w, mobileconfig)
+}
+
+// escapeXMLText 转义 XML 文本节点：ca_display_name 来自配置文件，
+// 含 & 或 < 时会让描述文件无法被 iOS 解析。
+func escapeXMLText(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, `"`, "&quot;")
+	return s
 }
 
 // handleAndroidGuide 返回 Android 证书安装引导页
@@ -358,7 +377,7 @@ func handleAndroidGuide(w http.ResponseWriter, r *http.Request) {
 body { font-family: -apple-system, sans-serif; max-width: 680px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; overflow-wrap: break-word; word-break: break-word; }
 h1 { font-size: 1.5em; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }
 .step { background: #f5f5f5; border-left: 4px solid #4CAF50; padding: 15px; margin: 15px 0; border-radius: 4px; }
-.step-num { display: inline-block; background: #4CAF50; color: white; width: 28px; height: 28px; text-align: center; line-height: 28px; border-radius: 50%; margin-right: 10px; font-weight: bold; }
+.step-num { display: inline-block; background: #4CAF50; color: white; width: 28px; height: 28px; text-align: center; line-height: 28px; border-radius: 50%%; margin-right: 10px; font-weight: bold; }
 .note { background: #fff3cd; border: 1px solid #ffcda1; padding: 12px; border-radius: 4px; margin: 15px 0; }
 .note ul { margin: 8px 0; padding-left: 20px; }
 .note li { margin: 6px 0; line-height: 1.6; }
@@ -434,11 +453,12 @@ func handleIndex(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, data)
 }
 
-// getListenHost 从请求中获取服务器的 host:port
+// getListenHost 返回写入安装脚本/引导页的服务器地址。
+// Host 头由客户端控制，只在它是合法的 host[:port] 时才使用，否则回落到
+// 配置中的监听地址，避免把 shell 元字符带进生成的脚本。
 func getListenHost(r *http.Request, cfg *Config) string {
-	// 优先使用请求的 Host 头
-	if r.Host != "" {
-		return r.Host
+	if h := sanitizeHostPort(r.Host); h != "" {
+		return h
 	}
 	// 后备使用配置中的监听地址
 	host, port, err := net.SplitHostPort(cfg.Listen)
@@ -449,6 +469,57 @@ func getListenHost(r *http.Request, cfg *Config) string {
 		host = detectLocalIP()
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// sanitizeHostPort 校验 host[:port]，不合法时返回空串。IPv6 字面量会被规范
+// 回带方括号的形式（SplitHostPort 会把方括号去掉）。
+func sanitizeHostPort(s string) string {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		host, port = s, ""
+	}
+
+	if strings.Contains(host, ":") || strings.HasPrefix(host, "[") {
+		literal := strings.Trim(host, "[]")
+		ip, err := netip.ParseAddr(literal)
+		if err != nil || !ip.Is6() {
+			return ""
+		}
+		host = literal
+		if port == "" {
+			return "[" + host + "]"
+		}
+	} else if !validHostname(host) {
+		return ""
+	}
+
+	if port == "" {
+		return host
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return ""
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n))
+}
+
+// validHostname 只接受 DNS 主机名与 IPv4 字面量（不含方括号 IPv6）。
+func validHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+
+	for i := 0; i < len(host); i++ {
+		c := host[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+
+	return !strings.HasPrefix(host, "-") && !strings.HasSuffix(host, "-")
 }
 
 // detectLocalIP 返回本机第一个非回环 IPv4 地址。

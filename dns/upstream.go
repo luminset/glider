@@ -1,8 +1,9 @@
 package dns
 
 import (
-	"net"
 	"sync/atomic"
+
+	"github.com/nadoo/glider/proxy"
 )
 
 // UPStream is a dns upstream.
@@ -15,9 +16,7 @@ type UPStream struct {
 func NewUPStream(servers []string) *UPStream {
 	// default port for dns upstream servers
 	for i, server := range servers {
-		if _, port, _ := net.SplitHostPort(server); port == "" {
-			servers[i] = net.JoinHostPort(server, "53")
-		}
+		servers[i] = proxy.SetDefaultPort(server, "53")
 	}
 	return &UPStream{servers: servers}
 }

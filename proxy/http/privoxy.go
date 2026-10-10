@@ -311,12 +311,21 @@ func (s *HTTP) servPrivoxy(req *request, c *proxy.Conn) {
 	}
 
 	// forward the remaining client bytes (e.g. a request body) to privoxy.
+	// 与 server.go 同样的原因：客户端的缓冲读取器会被归还复用，协程必须先结束。
+	bodyDone := make(chan struct{})
 	go func() {
+		defer close(bodyDone)
 		if _, err := c.Reader().Peek(1); err == nil {
 			proxy.Copy(rc, c)
 			rc.SetDeadline(time.Now())
-			c.SetDeadline(time.Now())
 		}
+	}()
+	defer func() {
+		// 与 server.go 同理：协程可能阻塞在读 c，也可能阻塞在写 rc
+		// （privoxy 不再读取请求体），只解一侧会死等。
+		c.SetDeadline(time.Now())
+		rc.SetDeadline(time.Now())
+		<-bodyDone
 	}()
 
 	r := pool.GetBufReader(rc)

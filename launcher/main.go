@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,24 +26,36 @@ type LauncherConfig struct {
 	RestartMaxRetry int
 }
 
-// ManagedProcess 被管理的子进程
+// ManagedProcess 被管理的子进程。
+// 生命周期由 run goroutine 独占：只有 run 会调用 cmd.Wait，
+// stop/restart 只能通过 desired/stopping 传递意图，避免并发 Wait 和重复子进程。
 type ManagedProcess struct {
 	Name       string
 	ExePath    string
 	Args       []string
 	ConfigPath string
 	Watch      bool
-	cmd        *exec.Cmd
-	mu         sync.Mutex
-	restarts   int
-	lastStart  time.Time
-	stopChan   chan struct{}
+
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	desired   string        // 期望的下一步动作
+	stopping  bool          // true 时 run 不再启动新一代子进程
+	exited    chan struct{} // run 退出时关闭
+	restarts  int
+	lastStart time.Time
 }
 
+// run 循环内识别的动作
+const (
+	desiredNone    = ""
+	desiredStop    = "stop"
+	desiredRestart = "restart"
+)
+
 var (
-	cfg      LauncherConfig
-	exeDir   string
-	stopAll  chan struct{}
+	cfg     LauncherConfig
+	exeDir  string
+	stopAll chan struct{}
 )
 
 func main() {
@@ -69,15 +82,14 @@ func main() {
 	log.Printf("glider: %s (watch=%v)", cfg.GliderPath, cfg.GliderWatch)
 	log.Printf("pacweb: %s (watch=%v)", cfg.PacwebPath, cfg.PacwebWatch)
 
-	// 杀掉可能残留的旧进程
-	killExisting(cfg.GliderPath)
-	killExisting(cfg.PacwebPath)
-
-	stopAll = make(chan struct{})
-
 	// 创建被管理的进程
 	gliderPath := resolvePath(cfg.GliderPath)
 	pacwebPath := resolvePath(cfg.PacwebPath)
+
+	// 杀掉可能残留的旧进程
+	stopAll = make(chan struct{})
+	killExisting(gliderPath)
+	killExisting(pacwebPath)
 
 	gliderProc := &ManagedProcess{
 		Name:       "glider",
@@ -85,6 +97,7 @@ func main() {
 		Args:       []string{"-config", resolvePath(cfg.GliderConfig)},
 		ConfigPath: resolvePath(cfg.GliderConfig),
 		Watch:      cfg.GliderWatch,
+		exited:     make(chan struct{}),
 	}
 
 	pacwebProc := &ManagedProcess{
@@ -93,19 +106,19 @@ func main() {
 		Args:       []string{"-config", resolvePath(cfg.PacwebConfig)},
 		ConfigPath: resolvePath(cfg.PacwebConfig),
 		Watch:      cfg.PacwebWatch,
+		exited:     make(chan struct{}),
 	}
 
-	// 启动两个进程
-	gliderProc.start()
-	pacwebProc.start()
-
-	// 启动健康监控（崩溃自动重启）
-	go gliderProc.monitor()
-	go pacwebProc.monitor()
+	// 启动健康监控（崩溃自动重启），run 自身负责首次拉起子进程
+	go gliderProc.run()
+	go pacwebProc.run()
 
 	// 启动配置文件监控（仅对 Watch=true 的进程）
 	if cfg.GliderWatch {
 		go watchConfig(gliderProc)
+	}
+	if cfg.PacwebWatch {
+		go watchConfig(pacwebProc)
 	}
 
 	// 等待退出信号
@@ -117,21 +130,16 @@ func main() {
 
 	// 停止所有子进程
 	close(stopAll)
-	gliderProc.stop()
-	pacwebProc.stop()
+	gliderProc.shutdown()
+	pacwebProc.shutdown()
 
 	log.Printf("所有子进程已停止，退出。")
 }
 
-// start 启动子进程
-func (p *ManagedProcess) start() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// 检查可执行文件是否存在
+// spawn 拉起一代子进程并登记到 p.cmd
+func (p *ManagedProcess) spawn() (*exec.Cmd, error) {
 	if _, err := os.Stat(p.ExePath); os.IsNotExist(err) {
-		log.Printf("[%s] 可执行文件不存在: %s", p.Name, p.ExePath)
-		return
+		return nil, fmt.Errorf("可执行文件不存在: %s", p.ExePath)
 	}
 
 	cmd := exec.Command(p.ExePath, p.Args...)
@@ -140,129 +148,196 @@ func (p *ManagedProcess) start() {
 	cmd.Dir = exeDir
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("[%s] 启动失败: %v", p.Name, err)
-		return
+		return nil, err
 	}
 
+	p.mu.Lock()
 	p.cmd = cmd
 	p.lastStart = time.Now()
-	p.stopChan = make(chan struct{})
+	p.mu.Unlock()
+
 	log.Printf("[%s] 已启动 (PID=%d)", p.Name, cmd.Process.Pid)
+	return cmd, nil
 }
 
-// stop 停止子进程
-func (p *ManagedProcess) stop() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// run 是子进程生命周期的唯一拥有者：启动、等待退出、按请求或崩溃决定是否重启
+func (p *ManagedProcess) run() {
+	defer close(p.exited)
 
-	if p.cmd == nil || p.cmd.Process == nil {
-		return
-	}
-
-	log.Printf("[%s] 正在停止 (PID=%d)...", p.Name, p.cmd.Process.Pid)
-
-	// 尝试优雅停止
-	p.cmd.Process.Signal(os.Interrupt)
-
-	// 等待退出（最多 5 秒）
-	done := make(chan error, 1)
-	go func() {
-		done <- p.cmd.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			log.Printf("[%s] 已退出: %v", p.Name, err)
-		} else {
-			log.Printf("[%s] 已正常退出", p.Name)
-		}
-	case <-time.After(5 * time.Second):
-		log.Printf("[%s] 优雅停止超时，强制终止", p.Name)
-		p.cmd.Process.Kill()
-		<-done
-	}
-
-	close(p.stopChan)
-}
-
-// monitor 监控子进程健康状态，崩溃时自动重启
-func (p *ManagedProcess) monitor() {
 	for {
-		select {
-		case <-stopAll:
+		if p.shouldStop() {
 			return
-		default:
 		}
 
-		if p.cmd == nil || p.cmd.Process == nil {
-			time.Sleep(time.Duration(cfg.RestartDelay) * time.Second)
-			p.start()
+		cmd, err := p.spawn()
+		if err != nil {
+			log.Printf("[%s] 启动失败: %v", p.Name, err)
+			if !sleepOrStop(restartDelay()) {
+				return
+			}
 			continue
 		}
 
-		// 等待进程退出
-		done := make(chan error, 1)
-		go func() {
-			if p.cmd != nil && p.cmd.Process != nil {
-				done <- p.cmd.Wait()
-			}
-		}()
+		// 停止请求可能恰好在 spawn 之后到达，此时没人再给它发信号
+		if p.stoppingRequested() {
+			terminate(cmd.Process)
+		}
 
-		select {
-		case err := <-done:
-			// 检查是否是主动停止
-			select {
-			case <-p.stopChan:
-				return
-			default:
-			}
+		waitErr := cmd.Wait()
 
-			if err != nil {
-				log.Printf("[%s] 进程异常退出: %v", p.Name, err)
-			} else {
-				log.Printf("[%s] 进程已退出", p.Name)
-			}
+		p.mu.Lock()
+		p.cmd = nil
+		desired := p.desired
+		p.desired = desiredNone
+		p.mu.Unlock()
 
-			// 重启退避逻辑
-			p.restarts++
-			if p.restarts > cfg.RestartMaxRetry {
-				log.Printf("[%s] 已达到最大重启次数 %d，停止重试", p.Name, cfg.RestartMaxRetry)
-				return
-			}
+		switch desired {
+		case desiredStop:
+			log.Printf("[%s] 已按请求停止", p.Name)
+			return
+		case desiredRestart:
+			p.mu.Lock()
+			p.restarts = 0
+			p.mu.Unlock()
+			log.Printf("[%s] 已按请求重启", p.Name)
+			continue
+		}
 
-			// 如果距离上次启动不到 10 秒就崩溃了，增加退避
-			if time.Since(p.lastStart) < 10*time.Second {
-				delay := time.Duration(cfg.RestartDelay*p.restarts) * time.Second
-				log.Printf("[%s] 快速崩溃，等待 %v 后重试 (第 %d/%d 次)", p.Name, delay, p.restarts, cfg.RestartMaxRetry)
-				time.Sleep(delay)
-			} else {
-				// 正常崩溃，重置重启计数
-				p.restarts = 0
-				log.Printf("[%s] %v 后重启...", p.Name, time.Duration(cfg.RestartDelay)*time.Second)
-				time.Sleep(time.Duration(cfg.RestartDelay) * time.Second)
-			}
+		if p.shouldStop() {
+			return
+		}
 
-			p.start()
+		if waitErr != nil {
+			log.Printf("[%s] 进程异常退出: %v", p.Name, waitErr)
+		} else {
+			log.Printf("[%s] 进程已退出", p.Name)
+		}
 
-		case <-stopAll:
+		p.mu.Lock()
+		p.restarts++
+		restarts := p.restarts
+		quickCrash := time.Since(p.lastStart) < 10*time.Second
+		if !quickCrash {
+			p.restarts = 0
+		}
+		p.mu.Unlock()
+
+		if restarts > cfg.RestartMaxRetry {
+			log.Printf("[%s] 已达到最大重启次数 %d，停止重试", p.Name, cfg.RestartMaxRetry)
+			return
+		}
+
+		delay := restartDelay()
+		if quickCrash {
+			delay = time.Duration(cfg.RestartDelay*restarts) * time.Second
+			log.Printf("[%s] 快速崩溃，等待 %v 后重试 (第 %d/%d 次)", p.Name, delay, restarts, cfg.RestartMaxRetry)
+		} else {
+			log.Printf("[%s] %v 后重启...", p.Name, delay)
+		}
+
+		if !sleepOrStop(delay) {
 			return
 		}
 	}
+}
+
+// restart 请求重启当前子进程（用于配置热重载）
+func (p *ManagedProcess) restart() {
+	p.mu.Lock()
+	if p.stopping {
+		p.mu.Unlock()
+		return
+	}
+	p.desired = desiredRestart
+	cmd := p.cmd
+	p.mu.Unlock()
+
+	if cmd != nil {
+		terminate(cmd.Process)
+	}
+}
+
+// shutdown 请求停止，并等待 run 回收子进程
+func (p *ManagedProcess) shutdown() {
+	p.mu.Lock()
+	p.stopping = true
+	p.desired = desiredStop
+	cmd := p.cmd
+	p.mu.Unlock()
+
+	if cmd != nil {
+		terminate(cmd.Process)
+	}
+
+	select {
+	case <-p.exited:
+	case <-time.After(10 * time.Second):
+		log.Printf("[%s] 停止超时", p.Name)
+	}
+}
+
+func (p *ManagedProcess) shouldStop() bool {
+	select {
+	case <-stopAll:
+		return true
+	default:
+	}
+	return p.stoppingRequested()
+}
+
+func (p *ManagedProcess) stoppingRequested() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stopping
+}
+
+// terminate 停止子进程。Windows 下 os.Interrupt 不被支持，
+// 需要连同子进程树一起终止，否则孙进程会残留并继续占用端口/输出管道。
+func terminate(proc *os.Process) {
+	if proc == nil {
+		return
+	}
+	if err := proc.Signal(os.Interrupt); err == nil {
+		return
+	}
+
+	kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(proc.Pid))
+	kill.Stdout, kill.Stderr = os.Stdout, os.Stderr
+	if err := kill.Run(); err != nil {
+		proc.Kill()
+	}
+}
+
+// sleepOrStop 等待 d，期间收到全局停止则返回 false
+func sleepOrStop(d time.Duration) bool {
+	if d < 0 {
+		d = 0
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-stopAll:
+		return false
+	}
+}
+
+// restartDelay 重启延迟，屏蔽非法配置值
+func restartDelay() time.Duration {
+	if cfg.RestartDelay < 1 {
+		return 3 * time.Second
+	}
+	return time.Duration(cfg.RestartDelay) * time.Second
 }
 
 // watchConfig 监控配置文件变更，触发重启
 func watchConfig(p *ManagedProcess) {
 	var lastMod time.Time
-	interval := 2 * time.Second
 
 	for {
-		time.Sleep(interval)
-
-		select {
-		case <-stopAll:
+		if !sleepOrStop(2 * time.Second) {
 			return
-		default:
 		}
 
 		info, err := os.Stat(p.ConfigPath)
@@ -270,32 +345,34 @@ func watchConfig(p *ManagedProcess) {
 			continue
 		}
 
-		if info.ModTime() != lastMod {
-			if !lastMod.IsZero() {
-				log.Printf("[%s] 检测到配置文件变更，正在重启...", p.Name)
-				p.stop()
-
-				// 重置 stopChan 和重启计数
-				p.mu.Lock()
-				p.stopChan = make(chan struct{})
-				p.restarts = 0
-				p.mu.Unlock()
-
-				time.Sleep(1 * time.Second)
-				p.start()
-				log.Printf("[%s] 配置重载完成", p.Name)
-			}
-			lastMod = info.ModTime()
+		if info.ModTime() == lastMod {
+			continue
 		}
+		first := lastMod.IsZero()
+		lastMod = info.ModTime()
+		if first {
+			continue
+		}
+
+		log.Printf("[%s] 检测到配置文件变更，正在重启...", p.Name)
+		p.restart()
 	}
 }
 
 // killExisting 杀掉可能残留的旧进程（按可执行文件名）
 func killExisting(exePath string) {
+	// 路径不存在时不做全局杀进程，避免按错误配置名误杀无关进程
+	if _, err := os.Stat(exePath); err != nil {
+		return
+	}
+
 	name := filepath.Base(exePath)
 	// 去掉 .exe 后缀
 	name = strings.TrimSuffix(name, ".exe")
 	name = strings.TrimSuffix(name, ".EXE")
+	if name == "" || name == "." || name == ".." {
+		return
+	}
 
 	// 用 taskkill 杀掉同名进程
 	cmd := exec.Command("taskkill", "/F", "/IM", name+".exe", "/T")
@@ -390,6 +467,17 @@ func parseConfig(path string) LauncherConfig {
 		case "restart_max_retry":
 			fmt.Sscanf(val, "%d", &c.RestartMaxRetry)
 		}
+	}
+
+	// 空值会让 resolvePath 退回到目录本身，保留默认更可用
+	if c.GliderPath == "" {
+		c.GliderPath = "glider.exe"
+	}
+	if c.PacwebPath == "" {
+		c.PacwebPath = "pacweb.exe"
+	}
+	if c.RestartMaxRetry < 0 {
+		c.RestartMaxRetry = 5
 	}
 
 	return c

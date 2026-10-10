@@ -59,11 +59,9 @@ func NewTLS(s string, d proxy.Dialer, p proxy.Proxy) (*TLS, error) {
 	}
 
 	if t.addr != "" {
-		if _, port, _ := net.SplitHostPort(t.addr); port == "" {
-			t.addr = net.JoinHostPort(t.addr, "443")
-		}
+		t.addr = proxy.SetDefaultPort(t.addr, "443")
 		if t.serverName == "" {
-			t.serverName = t.addr[:strings.LastIndex(t.addr, ":")]
+			t.serverName = proxy.Hostname(t.addr)
 		}
 	}
 
