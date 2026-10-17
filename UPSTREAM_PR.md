@@ -10,12 +10,19 @@ This document describes which files are **custom additions** and must be
 
 | Path | Description |
 |------|-------------|
-| `pacweb/` | CA certificate export + PAC hosting + multi-platform install guide service |
-| `launcher/` | Centralized launcher that manages glider & pacweb processes |
 | `rules/` | Personal domain-routing rule files (i2p.rule, direct.rule) |
 | `scripts/` | Fork helper scripts (e.g. upstream patch generator) |
 | `UPSTREAM_PR.md` | This guide itself |
 | `AGENTS.md` | Fork-local working rules (commit hygiene, repo conventions) |
+
+The two custom components used to live here and have since been **moved out of the
+repository** (they are standalone Go modules and now live in the workspace's `extra/`
+folder):
+
+| Former path | What it was |
+|------|-------------|
+| `pacweb/` | CA certificate export + PAC hosting + multi-platform install guide service |
+| `launcher/` | Centralized launcher that manages glider & pacweb processes |
 
 ### Local environment artifacts (already in .gitignore)
 
@@ -40,7 +47,7 @@ source changes (excluding custom directories):
 
 The script will:
 1. Compute the diff between `upstream/main` and current `HEAD`
-2. Exclude changes under `pacweb/`, `launcher/`, `rules/`, and this guide
+2. Exclude changes under `rules/`, `scripts/`, and this guide
 3. Output `upstream-pr.patch` in the repository root
 
 Review the patch, then apply it to a clean branch cut from upstream:
@@ -63,7 +70,7 @@ Then open the PR from `luminset/glider:upstream-pr` to `nadoo/glider:main`.
    git fetch upstream
    git checkout -b upstream-pr upstream/main
    ```
-2. Cherry-pick only the glider source commits (exclude pacweb/launcher/rules):
+2. Cherry-pick only the glider source commits (exclude `rules/` and `scripts/`):
    ```bash
    git checkout <commit-hash> -- proxy/ config/ main.go config.go ...
    ```
@@ -79,24 +86,26 @@ Then open the PR from `luminset/glider:upstream-pr` to `nadoo/glider:main`.
   - `docs: ...` for documentation
 - Include a clear description of what and why
 
-## Custom Directory Naming Convention
+## Custom Code Naming Convention
 
-To make exclusion easy and unambiguous, all custom additions are kept in
-dedicated top-level directories:
+To keep exclusion easy and unambiguous:
 
-- `pacweb/` — all PAC/cert service code
-- `launcher/` — all process-launcher code
-- `rules/` — all personal routing rules
+- custom **components** (independent programs) do **not** live in this repository at all —
+  `pacweb/` and `launcher/` were moved to the workspace's `extra/` folder
+- only small fork-local support files stay here: `rules/` (personal routing rules) and
+  `scripts/` (fork helper scripts)
 
 Never mix custom code into upstream directories (e.g. do not add new
 files under `proxy/` unless they are genuine upstream-worthy changes).
 
 ## Syncing with Upstream
 
+`main` is a pure mirror of upstream; work happens on `nohafix`.
+
 ```bash
 git fetch upstream
-git checkout main
-git merge upstream/main
-# Resolve conflicts if any, then:
+git switch main && git merge --ff-only upstream/main   # fast-forward the mirror
 git push origin main
+git switch nohafix && git rebase upstream/main          # replay our commits
+git push --force-with-lease origin nohafix
 ```

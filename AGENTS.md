@@ -8,8 +8,9 @@
 
 - 本仓库是 `github.com/nadoo/glider` 的**个人 fork**（自用增强分支）；上游是**只读参考**。
 - 远端：`origin` = 自己的 fork；`upstream` = `nadoo/glider`。
-- **提交与同步面向 `origin/main`**；**永远不要向 `upstream` 推送**——上游只走 PR。
-- 版本号见 `main.go` 的 `version`，保持高于上游 README 所述版本。
+- 分支模型（三线）：`main` = **上游纯镜像**（只快进，不直接提交）；`nohafix` = **自有主线**（所有自有改动提交到这里，也是默认分支）；`upstream-pr` = 对上游的 PR 通道（按需创建、长期复用，永远从 `upstream/main` 起建）。
+- **永远不要向 `upstream` 推送**——上游只走 PR。
+- 版本号见 `main.go` 的 `version`（源码里保持上游原值）；自建版本号由构建参数注入：`-ldflags "-X main.version=<版本>-NOHAFIX<n>"`。
 
 ## 红线：不可进入被跟踪文件的内容
 
@@ -27,7 +28,8 @@
 
 1. **本地规则文件不入库**：`rules/*.rule` 由 `.gitignore` 排除（它们承载本机地址）。
    只提交 `rules/*.rule.example` 占位模板；**新增规则时请同时补一份 `.example`**。
-2. **自研组件不混进上游目录**：自研代码放 `pacweb/`、`launcher/`、`rules/`、`scripts/`。
+2. **自研组件不混进上游目录**：仓库内只保留 `rules/`、`scripts/` 与 fork 文档；
+   `pacweb/`、`launcher/` 这类独立自研模块**已移出本仓库**，放在工作区的 `extra/` 下，各自是独立 Go module。
    对 `proxy/`、`rule/`、`config.go` 等上游目录的改动，必须是**可上游的通用改动**。
 3. **Go 源码里不写死地址**：默认值用中性占位（如 `127.0.0.1`）或运行时探测；
    真实地址由本地 `*.conf` 提供（`*.conf` 已 gitignore）。

@@ -5,13 +5,14 @@
 # Output: upstream-pr.patch (in repo root)
 #
 # Excluded paths:
-#   pacweb/        - custom CA/PAC service
-#   launcher/      - custom process launcher
 #   rules/         - personal routing rules
 #   scripts/       - fork helper scripts
-#   .gitignore     - lists fork-only artifacts (pacweb/, launcher/, *.rule, dumps)
+#   .gitignore     - lists fork-only artifacts (*.rule, dumps)
 #   UPSTREAM_PR.md - this guide itself
 #   AGENTS.md      - fork-local working rules (hygiene / conventions)
+#
+# Note: pacweb/ and launcher/ were moved out of this repository (standalone modules that now
+# live in the workspace's extra/ folder), so they no longer need excluding.
 
 $ErrorActionPreference = 'Stop'
 
